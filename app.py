@@ -20,42 +20,46 @@ fs = GridFS(db)
 @app.route('/', methods=['GET', 'POST'])
 def upload():
     if request.method == 'POST':
-        file = request.files['file']
-        otp = str(random.randint(100000, 999999))
-        # Store PDF in GridFS
-        gridfs_id = fs.put(file, filename=file.filename)
-        # Store metadata in a separate collection
-        db.filemeta.insert_one({
-            'gridfs_id': gridfs_id,
-            'filename': file.filename,
-            'otp': otp,
-            'downloaded': False,
-            'upload_time': datetime.datetime.utcnow()
-        })
+        try:
+            file = request.files['file']
+            otp = str(random.randint(100000, 999999))
+            # Store PDF in GridFS
+            gridfs_id = fs.put(file, filename=file.filename)
+            # Store metadata in a separate collection
+            db.filemeta.insert_one({
+                'gridfs_id': gridfs_id,
+                'filename': file.filename,
+                'otp': otp,
+                'downloaded': False,
+                'upload_time': datetime.datetime.utcnow()
+            })
 
-        file_id_str = str(gridfs_id)
-        return f"""
-        <!DOCTYPE html>
-        <html lang='en'>
-        <head>
-            <meta charset='UTF-8'>
-            <meta name='viewport' content='width=device-width, initial-scale=1'>
-            <link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css' rel='stylesheet'>
-        </head>
-        <body style='background: linear-gradient(135deg, #2ecc71, #20c997); min-height:100vh;'>
-            <div class='container d-flex align-items-center justify-content-center' style='min-height:100vh;'>
-                <div class='card p-4' style='border-radius:18px; box-shadow:0 8px 25px rgba(0,0,0,0.13);'>
-                    <h3 class='text-success mb-3'>✅ File uploaded successfully</h3>
-                    <div class='mb-2'><span class='fw-bold'>🔗 Share this link:</span> <a href='/verify/{file_id_str}' class='link-success'>/verify/{file_id_str}</a></div>
-                    <div class='mb-2'><span class='fw-bold'>🔐 OTP:</span> <span class='badge bg-success fs-5'>{otp}</span></div>
-                    <div class='text-warning mb-2'>⚠️ File will auto-delete after download</div>
-                    <a href='/' class='btn btn-outline-success mt-2'>Upload Another File</a>
+            file_id_str = str(gridfs_id)
+            return f"""
+            <!DOCTYPE html>
+            <html lang='en'>
+            <head>
+                <meta charset='UTF-8'>
+                <meta name='viewport' content='width=device-width, initial-scale=1'>
+                <link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css' rel='stylesheet'>
+            </head>
+            <body style='background: linear-gradient(135deg, #2ecc71, #20c997); min-height:100vh;'>
+                <div class='container d-flex align-items-center justify-content-center' style='min-height:100vh;'>
+                    <div class='card p-4' style='border-radius:18px; box-shadow:0 8px 25px rgba(0,0,0,0.13);'>
+                        <h3 class='text-success mb-3'>✅ File uploaded successfully</h3>
+                        <div class='mb-2'><span class='fw-bold'>🔗 Share this link:</span> <a href='/verify/{file_id_str}' class='link-success'>/verify/{file_id_str}</a></div>
+                        <div class='mb-2'><span class='fw-bold'>🔐 OTP:</span> <span class='badge bg-success fs-5'>{otp}</span></div>
+                        <div class='text-warning mb-2'>⚠️ File will auto-delete after download</div>
+                        <a href='/' class='btn btn-outline-success mt-2'>Upload Another File</a>
+                    </div>
                 </div>
-            </div>
-            <script src='https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js'></script>
-        </body>
-        </html>
-        """
+                <script src='https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js'></script>
+            </body>
+            </html>
+            """
+        except Exception as e:
+            print(f"Error in upload route: {e}")
+            return f"❌ Internal Server Error: {e}", 500
     return render_template('upload.html')
 
 # OTP verification
