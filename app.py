@@ -1,25 +1,19 @@
 from flask import Flask, request, send_file, render_template, after_this_request
-from flask_sqlalchemy import SQLAlchemy
+from pymongo import MongoClient
+from gridfs import GridFS
+from dotenv import load_dotenv
 import os, uuid, datetime, random
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
 
-# Database model
-class File(db.Model):
-    id = db.Column(db.String, primary_key=True)
-    filename = db.Column(db.String)
-    downloaded = db.Column(db.Boolean, default=False)
-    access_ip = db.Column(db.String)
-    access_time = db.Column(db.DateTime)
-    otp = db.Column(db.String)
-
-# Initialize DB
-with app.app_context():
-    db.create_all()
+# MongoDB connection
+mongo_client = MongoClient(os.getenv('MONGO_URI'))
+db = mongo_client.secure_files_db
+fs = GridFS(db)
 
 # Upload route
 @app.route('/', methods=['GET', 'POST'])
@@ -28,12 +22,16 @@ def upload():
         file = request.files['file']
         file_id = str(uuid.uuid4())
         otp = str(random.randint(100000, 999999))
-        save_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id + '_' + file.filename)
-        file.save(save_path)
-
-        new_file = File(id=file_id, filename=file.filename, otp=otp)
-        db.session.add(new_file)
-        db.session.commit()
+        # Store PDF in GridFS
+        gridfs_id = fs.put(file, filename=file.filename)
+        # Store metadata in a separate collection
+        db.filemeta.insert_one({
+            'gridfs_id': gridfs_id,
+            'filename': file.filename,
+            'otp': otp,
+            'downloaded': False,
+            'upload_time': datetime.datetime.utcnow()
+        })
 
         return f"""
         <!DOCTYPE html>
@@ -62,13 +60,13 @@ def upload():
 # OTP verification
 @app.route('/verify/<file_id>', methods=['GET', 'POST'])
 def verify(file_id):
-    file = File.query.get(file_id)
-    if not file:
+    filemeta = db.filemeta.find_one({'gridfs_id': file_id})
+    if not filemeta:
         return "❌ Invalid file ID."
 
     if request.method == 'POST':
         entered_otp = request.form['otp']
-        if entered_otp == file.otp and not file.downloaded:
+        if entered_otp == filemeta['otp'] and not filemeta['downloaded']:
                         return f"""
                         <!DOCTYPE html>
                         <html lang='en'>
@@ -119,32 +117,31 @@ def verify(file_id):
 # Download route
 @app.route('/download/<file_id>')
 def download(file_id):
-    file = File.query.get(file_id)
-    if not file or file.downloaded:
+    filemeta = db.filemeta.find_one({'gridfs_id': file_id})
+    if not filemeta or filemeta['downloaded']:
         return "❌ Link expired or file not found."
 
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], file.id + '_' + file.filename)
-
-    if not os.path.exists(file_path):
-        return "❌ File no longer available."
-
     # Mark file as downloaded
-    file.downloaded = True
-    file.access_ip = request.remote_addr
-    file.access_time = datetime.datetime.utcnow()
-    db.session.commit()
+    db.filemeta.update_one(
+        {'gridfs_id': file_id},
+        {'$set': {
+            'downloaded': True,
+            'download_ip': request.remote_addr,
+            'download_time': datetime.datetime.utcnow()
+        }}
+    )
+
+    # Stream file from GridFS
+    gridout = fs.get(filemeta['gridfs_id'])
 
     @after_this_request
     def remove_file(response):
-        try:
-            os.remove(file_path)
-        except Exception as e:
-            print(f"Error deleting file: {e}")
+        fs.delete(filemeta['gridfs_id'])
+        db.filemeta.delete_one({'gridfs_id': file_id})
         return response
 
-    return send_file(file_path, as_attachment=True)
+    return send_file(gridout, as_attachment=True, download_name=filemeta['filename'])
 
 # Ensure upload folder exists
 if __name__ == '__main__':
-    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
     app.run(debug=True)
