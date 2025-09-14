@@ -9,7 +9,6 @@ import os, datetime, random
 load_dotenv()
 
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = 'uploads'
 
 # MongoDB connection
 mongo_client = MongoClient(os.getenv('MONGO_URI'))
