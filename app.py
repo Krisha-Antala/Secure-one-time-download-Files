@@ -96,7 +96,29 @@ def verify(file_id):
                         </body>
                         </html>
                         """
-        return "❌ Invalid OTP or file already downloaded."
+        return """
+        <!DOCTYPE html>
+        <html lang='en'>
+        <head>
+            <meta charset='UTF-8'>
+            <meta name='viewport' content='width=device-width, initial-scale=1'>
+            <link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css' rel='stylesheet'>
+        </head>
+        <body style='background: linear-gradient(135deg, #e74c3c, #c0392b); min-height:100vh;'>
+            <div class='container d-flex align-items-center justify-content-center' style='min-height:100vh;'>
+                <div class='card p-4' style='border-radius:18px; box-shadow:0 8px 25px rgba(0,0,0,0.13);'>
+                    <h4 class='mb-3 text-danger'>❌ Access Denied</h4>
+                    <p class='text-muted mb-3'>Invalid OTP or file already downloaded.</p>
+                    <div class='alert alert-danger' role='alert'>
+                        <strong>Error:</strong> The OTP you entered is incorrect or this file has already been downloaded and deleted.
+                    </div>
+                    <a href='/' class='btn btn-outline-danger mt-2'>Upload New File</a>
+                </div>
+            </div>
+            <script src='https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js'></script>
+        </body>
+        </html>
+        """
 
     return '''
         <!DOCTYPE html>
