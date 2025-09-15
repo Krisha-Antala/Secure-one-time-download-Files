@@ -1,9 +1,10 @@
+import io
 from flask import Flask, request, send_file, render_template, after_this_request
 from pymongo import MongoClient
 from gridfs import GridFS
 from bson import ObjectId
 from dotenv import load_dotenv
-import os, datetime, random
+import os, datetime, random, hashlib
 
 # Load environment variables from .env file
 load_dotenv()
@@ -11,27 +12,34 @@ load_dotenv()
 app = Flask(__name__)
 
 # MongoDB connection
-mongo_client = MongoClient(os.getenv('MONGO_URI'))
+mongo_client = MongoClient(os.getenv("MONGO_URI"))
 db = mongo_client.secure_files_db
 fs = GridFS(db)
 
+
 # Upload route
-@app.route('/', methods=['GET', 'POST'])
+@app.route("/", methods=["GET", "POST"])
 def upload():
-    if request.method == 'POST':
+    if request.method == "POST":
         try:
-            file = request.files['file']
+            file = request.files["file"]
+            file_bytes = file.read()  # Read file content as bytes
             otp = str(random.randint(100000, 999999))
+            # Calculate file checksum
+            checksum = hashlib.sha256(file_bytes).hexdigest()
             # Store PDF in GridFS
-            gridfs_id = fs.put(file, filename=file.filename)
+            gridfs_id = fs.put(file_bytes, filename=file.filename, metadata={"checksum": checksum})
             # Store metadata in a separate collection
-            db.filemeta.insert_one({
-                'gridfs_id': gridfs_id,
-                'filename': file.filename,
-                'otp': otp,
-                'downloaded': False,
-                'upload_time': datetime.datetime.utcnow()
-            })
+            db.filemeta.insert_one(
+                {
+                    "gridfs_id": gridfs_id,
+                    "filename": file.filename,
+                    "otp": otp,
+                    "downloaded": False,
+                    "upload_time": datetime.datetime.now(datetime.UTC),  # Fix deprecation warning
+                    "checksum": checksum,
+                }
+            )
 
             file_id_str = str(gridfs_id)
             return f"""
@@ -59,10 +67,10 @@ def upload():
         except Exception as e:
             print(f"Error in upload route: {e}")
             return f"❌ Internal Server Error: {e}", 500
-    return render_template('upload.html')
+    return render_template("upload.html")
 
 # OTP verification
-@app.route('/verify/<file_id>', methods=['GET', 'POST'])
+@app.route("/verify/<file_id>", methods=["GET", "POST"])
 def verify(file_id):
     try:
         gridfs_id = ObjectId(file_id)
@@ -90,7 +98,7 @@ def verify(file_id):
         </body>
         </html>
         """
-    filemeta = db.filemeta.find_one({'gridfs_id': gridfs_id})
+    filemeta = db.filemeta.find_one({"gridfs_id": gridfs_id})
     if not filemeta:
         return """
         <!DOCTYPE html>
@@ -116,10 +124,10 @@ def verify(file_id):
         </html>
         """
 
-    if request.method == 'POST':
-        entered_otp = request.form['otp']
-        if entered_otp == filemeta['otp'] and not filemeta['downloaded']:
-                        return f"""
+    if request.method == "POST":
+        entered_otp = request.form["otp"]
+        if entered_otp == filemeta["otp"] and not filemeta["downloaded"]:
+            return f"""
                         <!DOCTYPE html>
                         <html lang='en'>
                         <head>
@@ -163,7 +171,7 @@ def verify(file_id):
         </html>
         """
 
-    return '''
+    return """
         <!DOCTYPE html>
         <html lang="en">
         <head>
@@ -186,40 +194,59 @@ def verify(file_id):
             <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
         </body>
         </html>
-        '''
+        """
+
 
 # Download route
-@app.route('/download/<file_id>')
+@app.route("/download/<file_id>")
 def download(file_id):
     try:
         gridfs_id = ObjectId(file_id)
-    except Exception:
-        return "❌ Link expired or file not found."
-    filemeta = db.filemeta.find_one({'gridfs_id': gridfs_id})
-    if not filemeta or filemeta['downloaded']:
-        return "❌ Link expired or file not found."
+        filemeta = db.filemeta.find_one({"gridfs_id": gridfs_id})
+        if not filemeta or filemeta["downloaded"]:
+            return """
+            <!DOCTYPE html>
+            <html lang='en'>
+            <head>
+                <meta charset='UTF-8'>
+                <meta name='viewport' content='width=device-width, initial-scale=1'>
+                <link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css' rel='stylesheet'>
+            </head>
+            <body style='background: linear-gradient(135deg, #e74c3c, #c0392b); min-height:100vh;'>
+                <div class='container d-flex align-items-center justify-content-center' style='min-height:100vh;'>
+                    <div class='card p-4' style='border-radius:18px; box-shadow:0 8px 25px rgba(0,0,0,0.13);'>
+                        <h3 class='text-danger mb-3'>❌ File Not Found or Already Downloaded</h3>
+                        <p class='text-muted mb-3'>The requested file could not be found or has already been downloaded.</p>
+                        <div class='alert alert-danger' role='alert'>
+                            <strong>Error:</strong> File has been deleted or never existed.
+                        </div>
+                        <a href='/' class='btn btn-outline-danger mt-2'>Upload New File</a>
+                    </div>
+                </div>
+                <script src='https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js'></script>
+            </body>
+            </html>
+            """, 404
 
-    # Mark file as downloaded
-    db.filemeta.update_one(
-        {'gridfs_id': gridfs_id},
-        {'$set': {
-            'downloaded': True,
-            'download_ip': request.remote_addr,
-            'download_time': datetime.datetime.utcnow()
-        }}
-    )
+        # Get file from GridFS
+        file_obj = fs.get(gridfs_id)
+        file_bytes = file_obj.read()  # read into bytes
 
-    # Stream file from GridFS
-    gridout = fs.get(gridfs_id)
-
-    @after_this_request
-    def remove_file(response):
+        # Delete metadata and file after download
+        db.filemeta.delete_one({"gridfs_id": gridfs_id})
         fs.delete(gridfs_id)
-        db.filemeta.delete_one({'gridfs_id': gridfs_id})
-        return response
 
-    return send_file(gridout, as_attachment=True, download_name=filemeta['filename'])
+        return send_file(
+            io.BytesIO(file_bytes),   # make it seekable
+            mimetype="application/pdf",
+            download_name=filemeta["filename"],
+            as_attachment=True,
+        )
+    except Exception as e:
+        print(f"Error in download route: {e}")
+        return f"❌ Internal Server Error: {e}", 500
+
 
 # Ensure upload folder exists
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(debug=True)
