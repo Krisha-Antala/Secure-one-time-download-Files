@@ -40,7 +40,6 @@ def get_storage():
 
     mongo_client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
     mongo_client.admin.command("ping")
-
     db = mongo_client.secure_files_db
     fs = GridFS(db)
 
@@ -91,7 +90,6 @@ def upload():
 
     try:
         database, storage = get_storage()
-
         file_bytes = uploaded_file.read()
 
         if not file_bytes:
@@ -134,7 +132,6 @@ def upload():
 
     except (RuntimeError, PyMongoError) as exc:
         return database_error_page(exc)
-
     except Exception as exc:
         print(f"Upload error: {exc}")
         return error_page(
