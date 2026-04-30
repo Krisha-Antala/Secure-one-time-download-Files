@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from flask import Flask, render_template, request, send_file, url_for
 from gridfs import GridFS
 from pymongo import MongoClient, ReturnDocument
+from pymongo.errors import PyMongoError
 
 
 load_dotenv()
@@ -22,13 +23,28 @@ app = Flask(__name__)
 MAX_FILE_SIZE_MB = 4
 app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_SIZE_MB * 1024 * 1024
 
-mongo_uri = os.getenv("MONGO_URI")
-if not mongo_uri:
-    raise RuntimeError("MONGO_URI environment variable is missing.")
+mongo_client = None
+db = None
+fs = None
 
-mongo_client = MongoClient(mongo_uri)
-db = mongo_client.secure_files_db
-fs = GridFS(db)
+
+def get_storage():
+    global mongo_client, db, fs
+
+    if db is not None and fs is not None:
+        return db, fs
+
+    mongo_uri = os.getenv("MONGO_URI")
+    if not mongo_uri:
+        raise RuntimeError("MONGO_URI environment variable is missing in Vercel.")
+
+    mongo_client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+    mongo_client.admin.command("ping")
+
+    db = mongo_client.secure_files_db
+    fs = GridFS(db)
+
+    return db, fs
 
 
 def error_page(title, message, status_code=400):
@@ -41,6 +57,15 @@ def error_page(title, message, status_code=400):
             home=True,
         ),
         status_code,
+    )
+
+
+def database_error_page(error):
+    print(f"Database error: {error}")
+    return error_page(
+        "Database Connection Failed",
+        "Check MONGO_URI in Vercel and MongoDB Atlas Network Access, then redeploy.",
+        500,
     )
 
 
@@ -65,6 +90,8 @@ def upload():
         return error_page("No File Selected", "Please choose a file before uploading.")
 
     try:
+        database, storage = get_storage()
+
         file_bytes = uploaded_file.read()
 
         if not file_bytes:
@@ -77,14 +104,14 @@ def upload():
         if not content_type:
             content_type = "application/octet-stream"
 
-        gridfs_id = fs.put(
+        gridfs_id = storage.put(
             file_bytes,
             filename=uploaded_file.filename,
             content_type=content_type,
             metadata={"checksum": checksum},
         )
 
-        db.filemeta.insert_one(
+        database.filemeta.insert_one(
             {
                 "gridfs_id": gridfs_id,
                 "filename": uploaded_file.filename,
@@ -105,6 +132,9 @@ def upload():
             otp=otp,
         )
 
+    except (RuntimeError, PyMongoError) as exc:
+        return database_error_page(exc)
+
     except Exception as exc:
         print(f"Upload error: {exc}")
         return error_page(
@@ -121,7 +151,11 @@ def verify(file_id):
     except Exception:
         return error_page("Invalid Link", "This download link is malformed.", 400)
 
-    filemeta = db.filemeta.find_one({"gridfs_id": gridfs_id})
+    try:
+        database, _storage = get_storage()
+        filemeta = database.filemeta.find_one({"gridfs_id": gridfs_id})
+    except (RuntimeError, PyMongoError) as exc:
+        return database_error_page(exc)
 
     if not filemeta or filemeta.get("downloaded"):
         return error_page(
@@ -140,7 +174,7 @@ def verify(file_id):
 
     token = secrets.token_urlsafe(32)
 
-    updated_meta = db.filemeta.find_one_and_update(
+    updated_meta = database.filemeta.find_one_and_update(
         {
             "gridfs_id": gridfs_id,
             "downloaded": False,
@@ -178,7 +212,12 @@ def download(file_id):
     except Exception:
         return error_page("Invalid Link", "This download link is malformed.", 400)
 
-    filemeta = db.filemeta.find_one_and_update(
+    try:
+        database, storage = get_storage()
+    except (RuntimeError, PyMongoError) as exc:
+        return database_error_page(exc)
+
+    filemeta = database.filemeta.find_one_and_update(
         {
             "gridfs_id": gridfs_id,
             "download_token": token,
@@ -201,11 +240,11 @@ def download(file_id):
         )
 
     try:
-        file_obj = fs.get(gridfs_id)
+        file_obj = storage.get(gridfs_id)
         file_bytes = file_obj.read()
 
-        db.filemeta.delete_one({"gridfs_id": gridfs_id})
-        fs.delete(gridfs_id)
+        database.filemeta.delete_one({"gridfs_id": gridfs_id})
+        storage.delete(gridfs_id)
 
         return send_file(
             io.BytesIO(file_bytes),
