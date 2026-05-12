@@ -5,6 +5,7 @@ import mimetypes
 import os
 import random
 import secrets
+from urllib.parse import quote_plus, unquote_plus
 
 from bson import ObjectId
 from dotenv import load_dotenv
@@ -28,6 +29,23 @@ db = None
 fs = None
 
 
+def normalize_mongo_uri(mongo_uri):
+    if not mongo_uri or "://" not in mongo_uri or "@" not in mongo_uri:
+        return mongo_uri
+
+    scheme, rest = mongo_uri.split("://", 1)
+    userinfo, host_and_options = rest.rsplit("@", 1)
+
+    if ":" not in userinfo:
+        return mongo_uri
+
+    username, password = userinfo.split(":", 1)
+    username = quote_plus(unquote_plus(username))
+    password = quote_plus(unquote_plus(password))
+
+    return f"{scheme}://{username}:{password}@{host_and_options}"
+
+
 def get_storage():
     global mongo_client, db, fs
 
@@ -38,6 +56,7 @@ def get_storage():
     if not mongo_uri:
         raise RuntimeError("MONGO_URI environment variable is missing in Vercel.")
 
+    mongo_uri = normalize_mongo_uri(mongo_uri)
     mongo_client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
     mongo_client.admin.command("ping")
     db = mongo_client.secure_files_db
